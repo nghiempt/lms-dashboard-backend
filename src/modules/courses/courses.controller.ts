@@ -21,6 +21,7 @@ import {
   LessonAccessGrantDto,
   ListCoursesQueryDto,
   ReorderDto,
+  SaveCourseTreeDto,
   UpdateChapterDto,
   UpdateCourseDto,
   UpdateLessonDto,
@@ -89,6 +90,14 @@ export class CoursesController {
   @Patch(':id')
   update(@Param('id') id: string, @Body() dto: UpdateCourseDto) {
     return this.courses.update(id, dto);
+  }
+
+  /** Lưu toàn bộ course + chapters + lessons atomic (transaction). */
+  @ApiBearerAuth()
+  @Roles(UserRole.ADMIN)
+  @Patch(':id/tree')
+  saveTree(@Param('id') id: string, @Body() dto: SaveCourseTreeDto) {
+    return this.courses.saveTree(id, dto);
   }
 
   @ApiBearerAuth()

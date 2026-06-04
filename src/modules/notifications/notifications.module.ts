@@ -27,7 +27,7 @@ import {
   Prisma,
   UserRole,
 } from '@prisma/client';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
 import {
   paginate,
@@ -127,8 +127,17 @@ class NotificationsService {
     return paginate(rows, total, query.page, query.limit);
   }
 
-  /** Admin sửa thông báo (chủ yếu khi còn nháp). */
+  /** Admin sửa thông báo — chỉ cho phép khi còn nháp (chưa gửi tới ai). */
   async adminUpdate(id: string, dto: UpdateNotificationDto) {
+    const existing = await this.prisma.notification.findUnique({
+      where: { id },
+    });
+    if (!existing) throw new NotFoundException('Không tìm thấy thông báo.');
+    if (existing.status === 'SENT') {
+      throw new BadRequestException(
+        'Thông báo đã gửi không thể chỉnh sửa (người nhận đã nhận nội dung cũ).',
+      );
+    }
     return this.prisma.notification.update({
       where: { id },
       data: {

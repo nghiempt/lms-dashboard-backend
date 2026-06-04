@@ -1,6 +1,7 @@
 import { PartialType } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsBoolean,
   IsEnum,
   IsInt,
@@ -9,6 +10,7 @@ import {
   IsString,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import {
   CoursePricing,
@@ -162,6 +164,79 @@ export class CreateLessonDto {
 }
 
 export class UpdateLessonDto extends PartialType(CreateLessonDto) {}
+
+// ---------- SAVE TREE (lưu toàn bộ course + chapters + lessons atomic) ----------
+export class SaveTreeLessonDto {
+  @IsString()
+  id!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  title?: string;
+
+  @IsOptional()
+  @IsEnum(VideoSource)
+  videoSource?: VideoSource;
+
+  @IsOptional()
+  @IsString()
+  bunnyVideoId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  videoUrl?: string | null;
+
+  @IsOptional()
+  @IsEnum(LessonLevel)
+  level?: LessonLevel;
+
+  @IsOptional()
+  @IsBoolean()
+  isPreview?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isLocked?: boolean;
+}
+
+export class SaveTreeChapterDto {
+  @IsString()
+  id!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  title?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SaveTreeLessonDto)
+  lessons?: SaveTreeLessonDto[];
+}
+
+export class SaveCourseTreeDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  title?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  price?: number;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SaveTreeChapterDto)
+  chapters?: SaveTreeChapterDto[];
+}
 
 // ---------- LESSON ACCESS GRANT (mở/khoá riêng cho học viên) ----------
 export class LessonAccessGrantDto {

@@ -69,15 +69,14 @@ export class AuthService {
 
     await this.sendVerificationEmail(user.email, user.fullName);
 
-    // cấp token luôn để FE đưa thẳng vào dashboard (email vẫn cần verify để mở khoá đầy đủ)
-    const device = await this.devices.registerOnLogin(user.id, user.role, ctx);
-    const tokenPair = await this.tokens.issueTokens(user, device.id);
-
+    // Không cấp token khi chưa xác thực email: tránh để tài khoản PENDING
+    // dùng được các endpoint protected. FE sẽ hiển thị thông báo kiểm tra email.
+    void ctx;
     return {
       user: this.sanitize(user),
-      ...tokenPair,
+      requiresEmailVerification: true,
       message:
-        'Đăng ký thành công. Vui lòng kiểm tra email để xác thực tài khoản.',
+        'Đăng ký thành công. Vui lòng kiểm tra email để xác thực tài khoản trước khi đăng nhập.',
     };
   }
 
@@ -96,6 +95,13 @@ export class AuthService {
     }
     const ok = await bcrypt.compare(dto.password, user.passwordHash);
     if (!ok) throw new UnauthorizedException('Email hoặc mật khẩu không đúng.');
+
+    // Chặn đăng nhập khi email chưa được xác thực (tài khoản PENDING).
+    if (user.status === UserStatus.PENDING || !user.emailVerifiedAt) {
+      throw new UnauthorizedException(
+        'Tài khoản chưa xác thực email. Vui lòng kiểm tra hộp thư để kích hoạt tài khoản.',
+      );
+    }
 
     // áp giới hạn thiết bị (có thể ném ForbiddenException)
     const device = await this.devices.registerOnLogin(user.id, user.role, ctx);

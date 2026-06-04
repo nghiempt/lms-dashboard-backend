@@ -16,6 +16,18 @@ const PERMISSIONS = [
 ];
 
 async function main() {
+  // Guard: không seed dữ liệu demo (admin@admin.com/admin123, student@lms.com…)
+  // lên môi trường production trừ khi được phép tường minh.
+  if (
+    process.env.NODE_ENV === 'production' &&
+    process.env.ALLOW_PROD_SEED !== 'true'
+  ) {
+    console.error(
+      '⛔ Từ chối seed trên production. Đặt ALLOW_PROD_SEED=true nếu thực sự muốn chạy.',
+    );
+    process.exit(1);
+  }
+
   console.log('🌱 Seeding...');
 
   // ----- PERMISSIONS -----

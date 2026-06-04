@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -16,6 +17,7 @@ import {
   LessonAccessGrantDto,
   ListCoursesQueryDto,
   ReorderDto,
+  SaveCourseTreeDto,
   UpdateChapterDto,
   UpdateCourseDto,
   UpdateLessonDto,
@@ -116,6 +118,88 @@ export class CoursesService {
   async remove(id: string) {
     await this.prisma.course.delete({ where: { id } });
     return { deleted: true };
+  }
+
+  /**
+   * Lưu toàn bộ cây khoá học (course + chapters + lessons) trong MỘT transaction.
+   * Thay cho việc FE gọi N+1 PATCH tuần tự (ghi một phần khi lỗi giữa chừng).
+   * Nếu bất kỳ bước nào lỗi → rollback toàn bộ, dữ liệu không bị ghi dở.
+   */
+  async saveTree(id: string, dto: SaveCourseTreeDto) {
+    await this.ensureCourse(id);
+
+    // Xác thực id chapter/lesson thuộc đúng khoá học trước khi ghi.
+    const existing = await this.prisma.course.findUnique({
+      where: { id },
+      include: { chapters: { include: { lessons: true } } },
+    });
+    if (!existing) throw new NotFoundException('Không tìm thấy khoá học.');
+
+    const chapterIds = new Set(existing.chapters.map((c) => c.id));
+    const lessonIds = new Set(
+      existing.chapters.flatMap((c) => c.lessons.map((l) => l.id)),
+    );
+
+    const ops: Prisma.PrismaPromise<unknown>[] = [];
+
+    const courseData: Prisma.CourseUpdateInput = {};
+    if (dto.title !== undefined) {
+      if (!dto.title.trim())
+        throw new BadRequestException('Tiêu đề khoá học không được để trống.');
+      courseData.title = dto.title.trim();
+    }
+    if (dto.price !== undefined) courseData.price = dto.price;
+    if (dto.description !== undefined) courseData.description = dto.description;
+    if (Object.keys(courseData).length) {
+      ops.push(this.prisma.course.update({ where: { id }, data: courseData }));
+    }
+
+    for (const ch of dto.chapters ?? []) {
+      if (!chapterIds.has(ch.id)) {
+        throw new BadRequestException(
+          `Chương ${ch.id} không thuộc khoá học này.`,
+        );
+      }
+      const chData: Prisma.ChapterUpdateInput = {};
+      if (ch.title !== undefined) {
+        if (!ch.title.trim())
+          throw new BadRequestException('Tên chương không được để trống.');
+        chData.title = ch.title.trim();
+      }
+      if (Object.keys(chData).length) {
+        ops.push(
+          this.prisma.chapter.update({ where: { id: ch.id }, data: chData }),
+        );
+      }
+
+      for (const l of ch.lessons ?? []) {
+        if (!lessonIds.has(l.id)) {
+          throw new BadRequestException(
+            `Bài học ${l.id} không thuộc khoá học này.`,
+          );
+        }
+        const lData: Prisma.LessonUpdateInput = {};
+        if (l.title !== undefined) {
+          if (!l.title.trim())
+            throw new BadRequestException('Tên bài học không được để trống.');
+          lData.title = l.title.trim();
+        }
+        if (l.videoSource !== undefined) lData.videoSource = l.videoSource;
+        if (l.bunnyVideoId !== undefined) lData.bunnyVideoId = l.bunnyVideoId;
+        if (l.videoUrl !== undefined) lData.videoUrl = l.videoUrl;
+        if (l.level !== undefined) lData.level = l.level;
+        if (l.isPreview !== undefined) lData.isPreview = l.isPreview;
+        if (l.isLocked !== undefined) lData.isLocked = l.isLocked;
+        if (Object.keys(lData).length) {
+          ops.push(
+            this.prisma.lesson.update({ where: { id: l.id }, data: lData }),
+          );
+        }
+      }
+    }
+
+    if (ops.length) await this.prisma.$transaction(ops);
+    return this.getAdminDetail(id);
   }
 
   /** Cấu trúc đầy đủ course cho admin (chapters + lessons). */
