@@ -1,0 +1,476 @@
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { Prisma } from '@prisma/client';
+import { paginate } from '../../common/dto/pagination.dto';
+import { slugify } from '../../common/utils';
+import { BunnyService } from '../../integrations/bunny/bunny.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import { ActivityService } from '../activity/activity.service';
+import {
+  CreateChapterDto,
+  CreateCourseDto,
+  CreateLessonDto,
+  LessonAccessGrantDto,
+  ListCoursesQueryDto,
+  ReorderDto,
+  UpdateChapterDto,
+  UpdateCourseDto,
+  UpdateLessonDto,
+} from './dto/courses.dto';
+
+@Injectable()
+export class CoursesService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly bunny: BunnyService,
+    private readonly activity: ActivityService,
+  ) {}
+
+  // ====================================================
+  //  ADMIN — COURSE CRUD
+  // ====================================================
+  async listAdmin(query: ListCoursesQueryDto) {
+    const where: Prisma.CourseWhereInput = {};
+    if (query.status) where.status = query.status;
+    if (query.pricing) where.pricing = query.pricing;
+    if (typeof query.isFeatured === 'boolean') where.isFeatured = query.isFeatured;
+    if (query.search) {
+      where.OR = [
+        { title: { contains: query.search, mode: 'insensitive' } },
+        { shortCode: { contains: query.search, mode: 'insensitive' } },
+      ];
+    }
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.course.findMany({
+        where,
+        orderBy: { [query.sortBy ?? 'createdAt']: query.sortOrder },
+        skip: query.skip,
+        take: query.limit,
+        include: {
+          _count: { select: { chapters: true, enrollments: true } },
+          chapters: { select: { _count: { select: { lessons: true } } } },
+        },
+      }),
+      this.prisma.course.count({ where }),
+    ]);
+
+    // doanh thu theo khoá (tổng giá order item của các đơn đã thanh toán)
+    const ids = rows.map((r) => r.id);
+    const revenueGroups = await this.prisma.orderItem.groupBy({
+      by: ['courseId'],
+      where: { courseId: { in: ids }, order: { status: 'PAID' } },
+      _sum: { price: true },
+      orderBy: { courseId: 'asc' },
+    });
+    const revenueMap = new Map(
+      revenueGroups.map((g) => [g.courseId, Number(g._sum.price ?? 0)]),
+    );
+
+    const data = rows.map((c) => {
+      const lessonCount = c.chapters.reduce(
+        (s, ch) => s + ch._count.lessons,
+        0,
+      );
+      const { chapters, _count, ...rest } = c;
+      void chapters;
+      return {
+        ...rest,
+        chapterCount: _count.chapters,
+        lessonCount,
+        studentsCount: _count.enrollments,
+        revenue: revenueMap.get(c.id) ?? 0,
+      };
+    });
+    return paginate(data, total, query.page, query.limit);
+  }
+
+  async create(dto: CreateCourseDto) {
+    return this.prisma.course.create({
+      data: {
+        ...dto,
+        slug: await this.uniqueSlug(dto.title),
+        price: dto.price ?? 0,
+      },
+    });
+  }
+
+  async update(id: string, dto: UpdateCourseDto) {
+    await this.ensureCourse(id);
+    return this.prisma.course.update({ where: { id }, data: dto });
+  }
+
+  async publish(id: string, publish: boolean) {
+    await this.ensureCourse(id);
+    return this.prisma.course.update({
+      where: { id },
+      data: {
+        status: publish ? 'PUBLISHED' : 'DRAFT',
+        publishedAt: publish ? new Date() : null,
+      },
+    });
+  }
+
+  async remove(id: string) {
+    await this.prisma.course.delete({ where: { id } });
+    return { deleted: true };
+  }
+
+  /** Cấu trúc đầy đủ course cho admin (chapters + lessons). */
+  async getAdminDetail(id: string) {
+    const course = await this.prisma.course.findUnique({
+      where: { id },
+      include: {
+        chapters: {
+          orderBy: { order: 'asc' },
+          include: { lessons: { orderBy: { order: 'asc' } } },
+        },
+      },
+    });
+    if (!course) throw new NotFoundException('Không tìm thấy khoá học.');
+    return course;
+  }
+
+  // ====================================================
+  //  ADMIN — CHAPTER
+  // ====================================================
+  async createChapter(courseId: string, dto: CreateChapterDto) {
+    await this.ensureCourse(courseId);
+    const order = dto.order ?? (await this.nextChapterOrder(courseId));
+    return this.prisma.chapter.create({ data: { ...dto, courseId, order } });
+  }
+
+  async updateChapter(id: string, dto: UpdateChapterDto) {
+    return this.prisma.chapter.update({ where: { id }, data: dto });
+  }
+
+  async removeChapter(id: string) {
+    await this.prisma.chapter.delete({ where: { id } });
+    return { deleted: true };
+  }
+
+  async reorderChapters(courseId: string, dto: ReorderDto) {
+    await this.prisma.$transaction(
+      dto.ids.map((id, idx) =>
+        this.prisma.chapter.update({
+          where: { id },
+          data: { order: idx },
+        }),
+      ),
+    );
+    return { reordered: true };
+  }
+
+  // ====================================================
+  //  ADMIN — LESSON
+  // ====================================================
+  async createLesson(chapterId: string, dto: CreateLessonDto) {
+    const chapter = await this.prisma.chapter.findUnique({
+      where: { id: chapterId },
+    });
+    if (!chapter) throw new NotFoundException('Không tìm thấy chương.');
+    const order = dto.order ?? (await this.nextLessonOrder(chapterId));
+    return this.prisma.lesson.create({ data: { ...dto, chapterId, order } });
+  }
+
+  async updateLesson(id: string, dto: UpdateLessonDto) {
+    return this.prisma.lesson.update({ where: { id }, data: dto });
+  }
+
+  async removeLesson(id: string) {
+    await this.prisma.lesson.delete({ where: { id } });
+    return { deleted: true };
+  }
+
+  async reorderLessons(chapterId: string, dto: ReorderDto) {
+    await this.prisma.$transaction(
+      dto.ids.map((id, idx) =>
+        this.prisma.lesson.update({ where: { id }, data: { order: idx } }),
+      ),
+    );
+    return { reordered: true };
+  }
+
+  /** Tạo video object trên Bunny để admin upload, gắn vào lesson. */
+  async prepareLessonVideo(lessonId: string) {
+    const lesson = await this.prisma.lesson.findUnique({
+      where: { id: lessonId },
+    });
+    if (!lesson) throw new NotFoundException('Không tìm thấy bài học.');
+    const { videoId } = await this.bunny.createVideoObject(lesson.title);
+    await this.prisma.lesson.update({
+      where: { id: lessonId },
+      data: { bunnyVideoId: videoId },
+    });
+    return { ...this.bunny.getUploadInfo(videoId), videoId };
+  }
+
+  /** Mở/khoá 1 bài học cho học viên cụ thể. */
+  async setLessonAccess(lessonId: string, dto: LessonAccessGrantDto) {
+    await this.prisma.lessonAccessGrant.upsert({
+      where: { lessonId_userId: { lessonId, userId: dto.userId } },
+      create: { lessonId, userId: dto.userId, unlocked: dto.unlocked },
+      update: { unlocked: dto.unlocked },
+    });
+    return { lessonId, userId: dto.userId, unlocked: dto.unlocked };
+  }
+
+  // ====================================================
+  //  STUDENT — CATALOG & DETAIL
+  // ====================================================
+  /** Catalog công khai (chỉ khoá đã PUBLISHED). */
+  async listPublic(query: ListCoursesQueryDto) {
+    const where: Prisma.CourseWhereInput = { status: 'PUBLISHED' };
+    if (query.pricing) where.pricing = query.pricing;
+    if (typeof query.isFeatured === 'boolean') where.isFeatured = query.isFeatured;
+    if (query.search) {
+      where.title = { contains: query.search, mode: 'insensitive' };
+    }
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.course.findMany({
+        where,
+        orderBy: { order: 'asc' },
+        skip: query.skip,
+        take: query.limit,
+        include: { _count: { select: { chapters: true } } },
+      }),
+      this.prisma.course.count({ where }),
+    ]);
+    return paginate(rows, total, query.page, query.limit);
+  }
+
+  /**
+   * Chi tiết khoá học cho học viên: chapters + lessons kèm trạng thái khoá
+   * và tiến độ. Quyết định locked: chưa mua & không phải preview -> khoá;
+   * có grant riêng thì override.
+   */
+  async getStudentDetail(courseId: string, userId: string) {
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: {
+        chapters: {
+          orderBy: { order: 'asc' },
+          include: { lessons: { orderBy: { order: 'asc' } } },
+        },
+      },
+    });
+    if (!course || course.status !== 'PUBLISHED') {
+      throw new NotFoundException('Không tìm thấy khoá học.');
+    }
+
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: { userId_courseId: { userId, courseId } },
+    });
+    const enrolled = !!enrollment && !this.isExpired(enrollment.expiresAt);
+
+    const lessonIds = course.chapters.flatMap((c) =>
+      c.lessons.map((l) => l.id),
+    );
+    const [grants, progresses] = await this.prisma.$transaction([
+      this.prisma.lessonAccessGrant.findMany({
+        where: { userId, lessonId: { in: lessonIds } },
+      }),
+      this.prisma.lessonProgress.findMany({
+        where: { userId, lessonId: { in: lessonIds } },
+      }),
+    ]);
+    const grantMap = new Map(grants.map((g) => [g.lessonId, g.unlocked]));
+    const progMap = new Map(progresses.map((p) => [p.lessonId, p]));
+
+    const chapters = course.chapters.map((ch) => ({
+      id: ch.id,
+      title: ch.title,
+      description: ch.description,
+      order: ch.order,
+      lessons: ch.lessons.map((ls) => {
+        const grant = grantMap.get(ls.id);
+        const locked = this.resolveLock(enrolled, ls.isPreview, ls.isLocked, grant);
+        const prog = progMap.get(ls.id);
+        return {
+          id: ls.id,
+          title: ls.title,
+          type: ls.type,
+          durationSec: ls.durationSec,
+          isPreview: ls.isPreview,
+          locked,
+          progress: prog
+            ? { status: prog.status, watchedSec: prog.watchedSec, lastPositionSec: prog.lastPositionSec }
+            : { status: 'NOT_STARTED', watchedSec: 0, lastPositionSec: 0 },
+        };
+      }),
+    }));
+
+    return {
+      id: course.id,
+      slug: course.slug,
+      title: course.title,
+      shortCode: course.shortCode,
+      subtitle: course.subtitle,
+      description: course.description,
+      thumbnailUrl: course.thumbnailUrl,
+      pricing: course.pricing,
+      price: course.price,
+      enrolled,
+      enrollment: enrollment
+        ? {
+            status: enrollment.status,
+            progressPct: enrollment.progressPct,
+            expiresAt: enrollment.expiresAt,
+          }
+        : null,
+      chapters,
+    };
+  }
+
+  /**
+   * Lấy dữ liệu phát bài học (signed video URL + watermark) cho học viên.
+   * Đồng thời ghi VideoAccessLog (nhật ký truy cập).
+   */
+  async playLesson(
+    lessonId: string,
+    user: { id: string; email: string },
+    ctx: { deviceId?: string; ip?: string; userAgent?: string },
+  ) {
+    const lesson = await this.prisma.lesson.findUnique({
+      where: { id: lessonId },
+      include: {
+        chapter: { include: { course: true } },
+        attachments: { include: { media: true } },
+      },
+    });
+    if (!lesson) throw new NotFoundException('Không tìm thấy bài học.');
+
+    const courseId = lesson.chapter.courseId;
+    const enrollment = await this.prisma.enrollment.findUnique({
+      where: { userId_courseId: { userId: user.id, courseId } },
+    });
+    const enrolled = !!enrollment && !this.isExpired(enrollment.expiresAt);
+
+    const grant = await this.prisma.lessonAccessGrant.findUnique({
+      where: { lessonId_userId: { lessonId, userId: user.id } },
+    });
+    const locked = this.resolveLock(
+      enrolled,
+      lesson.isPreview,
+      lesson.isLocked,
+      grant?.unlocked,
+    );
+    if (locked) {
+      throw new ForbiddenException(
+        'Bạn chưa có quyền truy cập bài học này. Vui lòng mua khoá học.',
+      );
+    }
+
+    let video: unknown = null;
+    if (lesson.type === 'VIDEO') {
+      if (lesson.videoSource === 'YOUTUBE' && lesson.videoUrl) {
+        // YouTube: trả id/url để FE nhúng (không có watermark/token)
+        video = { source: 'YOUTUBE', youtubeId: lesson.videoUrl };
+      } else if (lesson.bunnyVideoId) {
+        // Bunny: signed URL có thời hạn + watermark = email học viên (chống chia sẻ)
+        video = {
+          source: 'BUNNY',
+          ...this.bunny.createSignedVideo(lesson.bunnyVideoId, user.email),
+        };
+      }
+      // nhật ký truy cập video
+      await this.prisma.videoAccessLog.create({
+        data: {
+          userId: user.id,
+          lessonId: lesson.id,
+          bunnyVideoId: lesson.bunnyVideoId,
+          deviceId: ctx.deviceId,
+          ipAddress: ctx.ip,
+          userAgent: ctx.userAgent,
+          watermark: user.email,
+        },
+      });
+    }
+
+    // cập nhật last accessed
+    if (enrollment) {
+      await this.prisma.enrollment.update({
+        where: { id: enrollment.id },
+        data: { lastAccessedAt: new Date() },
+      });
+    }
+
+    await this.activity.log({
+      userId: user.id,
+      type: 'VIEW_LESSON',
+      action: `Xem bài "${lesson.title}"`,
+      ipAddress: ctx.ip,
+      userAgent: ctx.userAgent,
+      meta: { lessonId: lesson.id, courseId },
+    });
+
+    return {
+      id: lesson.id,
+      title: lesson.title,
+      type: lesson.type,
+      description: lesson.description,
+      articleHtml: lesson.type === 'ARTICLE' ? lesson.articleHtml : null,
+      durationSec: lesson.durationSec,
+      video,
+      attachments: lesson.attachments.map((a) => ({
+        id: a.id,
+        title: a.title,
+        url: a.media?.url ?? a.url,
+      })),
+    };
+  }
+
+  // ====================================================
+  //  HELPERS
+  // ====================================================
+  private resolveLock(
+    enrolled: boolean,
+    isPreview: boolean,
+    isLocked: boolean,
+    grant?: boolean,
+  ): boolean {
+    if (grant === true) return false; // mở khoá riêng
+    if (grant === false) return true; // khoá riêng
+    if (isPreview) return false;
+    if (!enrolled) return true;
+    return isLocked;
+  }
+
+  private isExpired(expiresAt: Date | null): boolean {
+    return !!expiresAt && expiresAt < new Date();
+  }
+
+  private async ensureCourse(id: string) {
+    const c = await this.prisma.course.findUnique({ where: { id } });
+    if (!c) throw new NotFoundException('Không tìm thấy khoá học.');
+    return c;
+  }
+
+  private async uniqueSlug(title: string): Promise<string> {
+    const base = slugify(title);
+    let slug = base;
+    let i = 1;
+    while (await this.prisma.course.findUnique({ where: { slug } })) {
+      slug = `${base}-${i++}`;
+    }
+    return slug;
+  }
+
+  private async nextChapterOrder(courseId: string): Promise<number> {
+    const last = await this.prisma.chapter.findFirst({
+      where: { courseId },
+      orderBy: { order: 'desc' },
+    });
+    return (last?.order ?? -1) + 1;
+  }
+
+  private async nextLessonOrder(chapterId: string): Promise<number> {
+    const last = await this.prisma.lesson.findFirst({
+      where: { chapterId },
+      orderBy: { order: 'desc' },
+    });
+    return (last?.order ?? -1) + 1;
+  }
+}
