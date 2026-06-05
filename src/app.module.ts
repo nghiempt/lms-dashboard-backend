@@ -17,6 +17,7 @@ import { UsersModule } from './modules/users/users.module';
 import { AdminsModule } from './modules/admins/admins.module';
 import { DevicesModule } from './modules/devices/devices.module';
 import { CoursesModule } from './modules/courses/courses.module';
+import { LandingCoursesModule } from './modules/landing-courses/landing-courses.module';
 import { ProgressModule } from './modules/progress/progress.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PaymentsModule } from './modules/payments/payments.module';
@@ -62,6 +63,7 @@ import { ActivityModule } from './modules/activity/activity.module';
     AdminsModule,
     DevicesModule,
     CoursesModule,
+    LandingCoursesModule,
     ProgressModule,
     OrdersModule,
     PaymentsModule,

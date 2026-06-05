@@ -585,6 +585,72 @@ model LandingSection {
   @@map("landing_sections")
 }
 
+// ============================================================
+//  LANDING PAGE — KHOÁ HỌC HIỂN THỊ TRÊN LP MARKETING
+//  Tách HOÀN TOÀN khỏi model Course (hệ thống học thật).
+//  Chỉ phục vụ hiển thị + bán hàng trên Landing Page.
+// ============================================================
+
+model LandingCourse {
+  id       String @id @default(uuid())
+  slug     String @unique // premium | premium-elite
+
+  // ----- card giá (hiển thị trang chủ LP) -----
+  title    String // "Khóa Premium"
+  price    String // giữ nguyên văn định dạng: "5.890.000"
+  currency String  @default("VNĐ")
+  featured Boolean @default(false) // card nổi bật
+  badge    String? // "Giới hạn mỗi tháng"
+  features Json    @default("[]") // string[] — danh sách bullet trên card
+
+  // ----- header trang chi tiết -----
+  tag          String? // mô tả ngắn dưới tiêu đề
+  accessLabel  String  @default("trọn đời") // "Truy cập trọn đời"
+  supportLabel String  @default("1:1") // "Hỗ trợ 1:1"
+  ctaUrl       String? // link nút "Tham gia khóa học"
+
+  isActive  Boolean  @default(true)
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  chapters LandingCourseChapter[]
+
+  @@map("course_landing_page")
+}
+
+model LandingCourseChapter {
+  id          String        @id @default(uuid())
+  courseId    String
+  course      LandingCourse @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  label       String // nhãn cover: "Foundation"
+  name        String // "Nhập môn & Tư duy nghề"
+  description String? // mô tả chương
+  order       Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  lessons LandingCourseLesson[]
+
+  @@index([courseId])
+  @@map("course_landing_page_chapters")
+}
+
+model LandingCourseLesson {
+  id        String               @id @default(uuid())
+  chapterId String
+  chapter   LandingCourseChapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  title     String // "Chào mừng & lộ trình khóa học"
+  videoUrl  String? // url video (admin điền)
+  duration  String? // hiển thị: "04:30"
+  order     Int                  @default(0)
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  @@index([chapterId])
+  @@map("course_landing_page_lessons")
+}
+
 // Menu website
 model Menu {
   id        String   @id @default(uuid())

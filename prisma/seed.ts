@@ -1,6 +1,7 @@
 /* eslint-disable no-console */
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { seedLandingCourses } from './seed-landing';
 
 const prisma = new PrismaClient();
 
@@ -10,7 +11,7 @@ const PERMISSIONS = [
   'admin.manage', 'role.manage',
   'course.read', 'course.create', 'course.update', 'course.delete',
   'order.read', 'order.confirm',
-  'media.manage', 'document.manage', 'content.manage', 'menu.manage',
+  'media.manage', 'document.manage', 'content.manage', 'landing.manage', 'menu.manage',
   'notification.send', 'community.manage', 'settings.manage',
   'stats.read', 'accesslog.read', 'device.manage',
 ];
@@ -200,6 +201,9 @@ async function main() {
       update: {},
     });
   }
+
+  // ----- LANDING PAGE COURSES (tách biệt với Course thật) -----
+  await seedLandingCourses(prisma);
 
   console.log('✅ Seed done.');
   console.log('   Admin:   admin@admin.com / admin123');
