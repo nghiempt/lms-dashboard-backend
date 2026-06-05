@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -25,6 +26,7 @@ import { TokensService } from './tokens.service';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private readonly googleClient: OAuth2Client;
 
   constructor(
@@ -67,7 +69,13 @@ export class AuthService {
       },
     });
 
-    await this.sendVerificationEmail(user.email, user.fullName);
+    // Gửi mail xác thực ở chế độ fire-and-forget: không chặn response đăng ký.
+    // Nếu SMTP lỗi/timeout, user vẫn đăng ký xong và có thể dùng resendVerify.
+    void this.sendVerificationEmail(user.email, user.fullName).catch((err) => {
+      this.logger.error(
+        `Gửi mail xác thực thất bại cho ${user.email}: ${(err as Error).message}`,
+      );
+    });
 
     // Không cấp token khi chưa xác thực email: tránh để tài khoản PENDING
     // dùng được các endpoint protected. FE sẽ hiển thị thông báo kiểm tra email.

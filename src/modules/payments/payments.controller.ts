@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Headers,
   HttpCode,
   Param,
@@ -23,6 +24,13 @@ export class PaymentsController {
   @Post('orders/:orderId/checkout')
   checkout(@CurrentUser() user: AuthUser, @Param('orderId') orderId: string) {
     return this.payments.createPaymentInfo(user.id, orderId);
+  }
+
+  /** Học viên: poll trạng thái thanh toán của đơn (để FE tự cập nhật UI). */
+  @ApiBearerAuth()
+  @Get('orders/:orderId/status')
+  status(@CurrentUser() user: AuthUser, @Param('orderId') orderId: string) {
+    return this.payments.getPaymentStatus(user.id, orderId);
   }
 
   /** Webhook SePay (public, xác thực bằng API key trong header). */

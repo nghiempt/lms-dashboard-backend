@@ -102,19 +102,32 @@ export class OrdersService {
         data: { status: OrderStatus.PAID, paidAt: new Date() },
       });
 
-      await tx.payment.create({
-        data: {
-          orderId,
-          userId: order.userId,
-          method,
-          status: PaymentStatus.SUCCESS,
-          amount: order.total,
-          transactionId: meta?.transactionId,
-          referenceCode: meta?.referenceCode,
-          rawPayload: (meta?.rawPayload as Prisma.InputJsonValue) ?? undefined,
-          paidAt: new Date(),
-        },
+      // Đối soát: nếu đã có payment PENDING (tạo ở bước checkout/QR) thì cập
+      // nhật chính bản ghi đó -> SUCCESS, tránh tạo payment trùng và đảm bảo
+      // bản ghi mà UI đang theo dõi chuyển trạng thái.
+      const pending = await tx.payment.findFirst({
+        where: { orderId, status: PaymentStatus.PENDING },
+        orderBy: { createdAt: 'desc' },
       });
+      const paymentData = {
+        method,
+        status: PaymentStatus.SUCCESS,
+        amount: order.total,
+        transactionId: meta?.transactionId,
+        referenceCode: meta?.referenceCode,
+        rawPayload: (meta?.rawPayload as Prisma.InputJsonValue) ?? undefined,
+        paidAt: new Date(),
+      };
+      if (pending) {
+        await tx.payment.update({
+          where: { id: pending.id },
+          data: paymentData,
+        });
+      } else {
+        await tx.payment.create({
+          data: { orderId, userId: order.userId, ...paymentData },
+        });
+      }
 
       // tạo enrollment cho từng khoá
       for (const item of order.items) {

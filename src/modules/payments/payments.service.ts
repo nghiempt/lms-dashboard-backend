@@ -83,6 +83,25 @@ export class PaymentsService {
   }
 
   /**
+   * Trạng thái thanh toán của 1 đơn — dùng cho FE poll khi đang hiển thị QR.
+   * Trả về gọn nhẹ để FE tự cập nhật UI sang "success" mà không cần F5.
+   */
+  async getPaymentStatus(userId: string, orderId: string) {
+    const order = await this.prisma.order.findFirst({
+      where: { id: orderId, userId },
+      select: { id: true, code: true, status: true, paidAt: true },
+    });
+    if (!order) throw new NotFoundException('Không tìm thấy đơn hàng.');
+    return {
+      orderId: order.id,
+      orderCode: order.code,
+      status: order.status,
+      paid: order.status === OrderStatus.PAID,
+      paidAt: order.paidAt,
+    };
+  }
+
+  /**
    * Webhook SePay gọi về khi có biến động số dư.
    * Xác thực API key, parse mã đơn từ nội dung CK, fulfill order.
    * SePay gửi header: Authorization: Apikey <SEPAY_WEBHOOK_API_KEY>
@@ -96,6 +115,11 @@ export class PaymentsService {
     if (!expected || provided !== expected) {
       throw new BadRequestException('Webhook không hợp lệ (sai API key).');
     }
+
+    this.logger.log(
+      `SePay webhook: id=${payload.id} type=${payload.transferType} ` +
+        `amount=${payload.transferAmount} content="${payload.content}"`,
+    );
 
     // chỉ xử lý giao dịch tiền vào
     if (payload.transferType && payload.transferType !== 'in') {
@@ -133,13 +157,18 @@ export class PaymentsService {
       rawPayload: payload,
     });
 
+    this.logger.log(`Webhook: đã ghi nhận thanh toán đơn ${code}.`);
     return { success: true, message: `Đã ghi nhận thanh toán đơn ${code}.` };
   }
 
-  /** Lấy mã đơn (INV-XXXXXX) từ nội dung chuyển khoản. */
+  /**
+   * Lấy mã đơn (INV-XXXXXX) từ nội dung chuyển khoản.
+   * Ngân hàng thường bỏ dấu gạch nối hoặc chèn khoảng trắng, nên chấp nhận
+   * "INV-123456", "INV123456", "INV 123456" rồi chuẩn hoá lại "INV-123456".
+   */
   private extractOrderCode(content: string): string | null {
-    const match = content.toUpperCase().match(/INV-?\d{6}/);
+    const match = content.toUpperCase().match(/INV[-\s]?(\d{6})/);
     if (!match) return null;
-    return match[0].replace(/^INV-?/, 'INV-');
+    return `INV-${match[1]}`;
   }
 }

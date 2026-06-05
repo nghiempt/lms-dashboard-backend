@@ -20,6 +20,11 @@ export class MailService {
         port: mail.port,
         secure: mail.secure,
         auth: { user: mail.user, pass: mail.password },
+        // Tránh treo request khi server không ra được SMTP (vd port 587 bị
+        // chặn): fail nhanh thay vì chờ tới khi nginx cắt 504.
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 15_000,
       });
     } else {
       this.logger.warn('SMTP chưa cấu hình — email sẽ được log thay vì gửi.');
