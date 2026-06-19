@@ -18,6 +18,8 @@ import {
   CreateChapterDto,
   CreateCourseDto,
   CreateLessonDto,
+  CreateSectionDto,
+  LessonAccessBulkDto,
   LessonAccessGrantDto,
   ListCoursesQueryDto,
   ReorderDto,
@@ -189,6 +191,27 @@ export class CoursesController {
   @Post('lessons/:id/video')
   prepareVideo(@Param('id') id: string) {
     return this.courses.prepareLessonVideo(id);
+  }
+
+  @ApiBearerAuth()
+  @Roles(UserRole.ADMIN)
+  @Post('chapters/:chapterId/sections')
+  createSection(@Param('chapterId') chapterId: string, @Body() dto: CreateSectionDto) {
+    return this.courses.createSection(chapterId, dto.title);
+  }
+
+  @ApiBearerAuth()
+  @Roles(UserRole.ADMIN)
+  @Delete('sections/:id')
+  removeSection(@Param('id') id: string) {
+    return this.courses.removeSection(id);
+  }
+
+  @ApiBearerAuth()
+  @Roles(UserRole.ADMIN)
+  @Post('lessons/access/bulk')
+  setAccessBulk(@Body() dto: LessonAccessBulkDto) {
+    return this.courses.setLessonAccessBulk(dto);
   }
 
   @ApiBearerAuth()

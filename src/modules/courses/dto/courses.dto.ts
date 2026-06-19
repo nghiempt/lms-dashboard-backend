@@ -198,6 +198,21 @@ export class SaveTreeLessonDto {
   @IsOptional()
   @IsBoolean()
   isLocked?: boolean;
+
+  // gán bài vào nhóm bài (null = nằm trực tiếp dưới chương)
+  @IsOptional()
+  @IsString()
+  sectionId?: string | null;
+}
+
+export class SaveTreeSectionDto {
+  @IsString()
+  id!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  title?: string;
 }
 
 export class SaveTreeChapterDto {
@@ -212,8 +227,20 @@ export class SaveTreeChapterDto {
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
+  @Type(() => SaveTreeSectionDto)
+  sections?: SaveTreeSectionDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
   @Type(() => SaveTreeLessonDto)
   lessons?: SaveTreeLessonDto[];
+}
+
+export class CreateSectionDto {
+  @IsString()
+  @MaxLength(200)
+  title!: string;
 }
 
 export class SaveCourseTreeDto {
@@ -242,6 +269,18 @@ export class SaveCourseTreeDto {
 export class LessonAccessGrantDto {
   @IsString()
   userId!: string;
+
+  @IsBoolean()
+  unlocked!: boolean;
+}
+
+// Mở/khoá hàng loạt: nhiều học viên × nhiều bài học.
+export class LessonAccessBulkDto {
+  @IsString({ each: true })
+  userIds!: string[];
+
+  @IsString({ each: true })
+  lessonIds!: string[];
 
   @IsBoolean()
   unlocked!: boolean;

@@ -14,6 +14,7 @@ import {
   CreateChapterDto,
   CreateCourseDto,
   CreateLessonDto,
+  LessonAccessBulkDto,
   LessonAccessGrantDto,
   ListCoursesQueryDto,
   ReorderDto,
@@ -131,13 +132,17 @@ export class CoursesService {
     // Xác thực id chapter/lesson thuộc đúng khoá học trước khi ghi.
     const existing = await this.prisma.course.findUnique({
       where: { id },
-      include: { chapters: { include: { lessons: true } } },
+      include: { chapters: { include: { lessons: true, sections: true } } },
     });
     if (!existing) throw new NotFoundException('Không tìm thấy khoá học.');
 
     const chapterIds = new Set(existing.chapters.map((c) => c.id));
     const lessonIds = new Set(
       existing.chapters.flatMap((c) => c.lessons.map((l) => l.id)),
+    );
+    // map chương → tập section id hợp lệ (để xác thực gán bài & đổi tên nhóm)
+    const sectionsByChapter = new Map(
+      existing.chapters.map((c) => [c.id, new Set(c.sections.map((s) => s.id))]),
     );
 
     const ops: Prisma.PrismaPromise<unknown>[] = [];
@@ -172,6 +177,20 @@ export class CoursesService {
         );
       }
 
+      const validSections = sectionsByChapter.get(ch.id) ?? new Set<string>();
+      for (const sec of ch.sections ?? []) {
+        if (!validSections.has(sec.id)) {
+          throw new BadRequestException(`Nhóm bài ${sec.id} không thuộc chương này.`);
+        }
+        if (sec.title !== undefined) {
+          if (!sec.title.trim())
+            throw new BadRequestException('Tên nhóm bài không được để trống.');
+          ops.push(
+            this.prisma.section.update({ where: { id: sec.id }, data: { title: sec.title.trim() } }),
+          );
+        }
+      }
+
       for (const l of ch.lessons ?? []) {
         if (!lessonIds.has(l.id)) {
           throw new BadRequestException(
@@ -190,6 +209,14 @@ export class CoursesService {
         if (l.level !== undefined) lData.level = l.level;
         if (l.isPreview !== undefined) lData.isPreview = l.isPreview;
         if (l.isLocked !== undefined) lData.isLocked = l.isLocked;
+        if (l.sectionId !== undefined) {
+          if (l.sectionId && !validSections.has(l.sectionId)) {
+            throw new BadRequestException('Nhóm bài không hợp lệ cho bài học này.');
+          }
+          lData.section = l.sectionId
+            ? { connect: { id: l.sectionId } }
+            : { disconnect: true };
+        }
         if (Object.keys(lData).length) {
           ops.push(
             this.prisma.lesson.update({ where: { id: l.id }, data: lData }),
@@ -209,12 +236,37 @@ export class CoursesService {
       include: {
         chapters: {
           orderBy: { order: 'asc' },
-          include: { lessons: { orderBy: { order: 'asc' } } },
+          include: {
+            lessons: { orderBy: { order: 'asc' } },
+            sections: { orderBy: { order: 'asc' } },
+          },
         },
       },
     });
     if (!course) throw new NotFoundException('Không tìm thấy khoá học.');
     return course;
+  }
+
+  // ====================================================
+  //  ADMIN — SECTION (Nhóm bài)
+  // ====================================================
+  async createSection(chapterId: string, title: string) {
+    const chapter = await this.prisma.chapter.findUnique({ where: { id: chapterId } });
+    if (!chapter) throw new NotFoundException('Không tìm thấy chương.');
+    const last = await this.prisma.section.findFirst({
+      where: { chapterId },
+      orderBy: { order: 'desc' },
+      select: { order: true },
+    });
+    return this.prisma.section.create({
+      data: { chapterId, title: title?.trim() || 'Nhóm bài mới', order: (last?.order ?? -1) + 1 },
+    });
+  }
+
+  async removeSection(id: string) {
+    // Lesson.sectionId tự set null nhờ FK onDelete: SetNull → bài học không bị xóa.
+    await this.prisma.section.delete({ where: { id } });
+    return { deleted: true };
   }
 
   // ====================================================
@@ -301,6 +353,21 @@ export class CoursesService {
     return { lessonId, userId: dto.userId, unlocked: dto.unlocked };
   }
 
+  /** Mở/khoá hàng loạt: mọi cặp (học viên × bài học). */
+  async setLessonAccessBulk(dto: LessonAccessBulkDto) {
+    const ops = dto.userIds.flatMap((userId) =>
+      dto.lessonIds.map((lessonId) =>
+        this.prisma.lessonAccessGrant.upsert({
+          where: { lessonId_userId: { lessonId, userId } },
+          create: { lessonId, userId, unlocked: dto.unlocked },
+          update: { unlocked: dto.unlocked },
+        }),
+      ),
+    );
+    await this.prisma.$transaction(ops);
+    return { count: ops.length, unlocked: dto.unlocked };
+  }
+
   // ====================================================
   //  STUDENT — CATALOG & DETAIL
   // ====================================================
@@ -336,7 +403,10 @@ export class CoursesService {
       include: {
         chapters: {
           orderBy: { order: 'asc' },
-          include: { lessons: { orderBy: { order: 'asc' } } },
+          include: {
+            lessons: { orderBy: { order: 'asc' } },
+            sections: { orderBy: { order: 'asc' } },
+          },
         },
       },
     });
@@ -368,6 +438,7 @@ export class CoursesService {
       title: ch.title,
       description: ch.description,
       order: ch.order,
+      sections: ch.sections.map((s) => ({ id: s.id, title: s.title })),
       lessons: ch.lessons.map((ls) => {
         const grant = grantMap.get(ls.id);
         const locked = this.resolveLock(enrolled, ls.isPreview, ls.isLocked, grant);
@@ -378,6 +449,7 @@ export class CoursesService {
           type: ls.type,
           durationSec: ls.durationSec,
           isPreview: ls.isPreview,
+          sectionId: ls.sectionId,
           locked,
           progress: prog
             ? { status: prog.status, watchedSec: prog.watchedSec, lastPositionSec: prog.lastPositionSec }

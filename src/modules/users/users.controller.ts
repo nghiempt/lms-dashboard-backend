@@ -58,6 +58,13 @@ export class UsersController {
     return this.users.getStudent(id);
   }
 
+  /** Cây khóa học đã mua + trạng thái mở khóa từng bài (để admin mở khóa riêng). */
+  @Get('students/:id/access-tree')
+  @Roles(UserRole.ADMIN)
+  accessTree(@Param('id') id: string) {
+    return this.users.getAccessTree(id);
+  }
+
   @Post('students')
   @Roles(UserRole.ADMIN)
   create(@Body() dto: CreateStudentDto) {

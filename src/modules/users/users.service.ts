@@ -175,6 +175,78 @@ export class UsersService {
     };
   }
 
+  /**
+   * Cây khóa học đã mua của học viên + trạng thái mở khóa hiệu lực từng bài.
+   * unlocked = true nếu bài đang được phép truy cập (theo grant riêng, preview,
+   * hoặc mặc định khi đã mua & bài không bị khóa).
+   */
+  async getAccessTree(studentId: string) {
+    const student = await this.prisma.user.findFirst({
+      where: { id: studentId, role: UserRole.STUDENT },
+      select: { id: true },
+    });
+    if (!student) throw new NotFoundException('Không tìm thấy học viên.');
+
+    const enrollments = await this.prisma.enrollment.findMany({
+      where: { userId: studentId },
+      include: {
+        course: {
+          select: {
+            id: true,
+            title: true,
+            chapters: {
+              orderBy: { order: 'asc' },
+              select: {
+                id: true,
+                title: true,
+                lessons: {
+                  orderBy: { order: 'asc' },
+                  select: { id: true, title: true, isPreview: true, isLocked: true },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { enrolledAt: 'desc' },
+    });
+
+    const lessonIds = enrollments.flatMap((e) =>
+      e.course.chapters.flatMap((c) => c.lessons.map((l) => l.id)),
+    );
+    const grants = await this.prisma.lessonAccessGrant.findMany({
+      where: { userId: studentId, lessonId: { in: lessonIds } },
+    });
+    const grantMap = new Map(grants.map((g) => [g.lessonId, g.unlocked]));
+
+    const resolveUnlocked = (
+      isPreview: boolean,
+      isLocked: boolean,
+      grant?: boolean,
+    ): boolean => {
+      if (grant === true) return true;
+      if (grant === false) return false;
+      if (isPreview) return true;
+      return !isLocked; // đã mua (enrolled) → mở mặc định trừ khi bài bị khóa
+    };
+
+    return {
+      courses: enrollments.map((e) => ({
+        id: e.course.id,
+        title: e.course.title,
+        chapters: e.course.chapters.map((c) => ({
+          id: c.id,
+          title: c.title,
+          lessons: c.lessons.map((l) => ({
+            id: l.id,
+            title: l.title,
+            unlocked: resolveUnlocked(l.isPreview, l.isLocked, grantMap.get(l.id)),
+          })),
+        })),
+      })),
+    };
+  }
+
   async createStudent(dto: CreateStudentDto) {
     const rawPassword = dto.password ?? randomToken(6);
     const passwordHash = await bcrypt.hash(rawPassword, 10);

@@ -314,16 +314,37 @@ model Chapter {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  lessons Lesson[]
+  lessons  Lesson[]
+  sections Section[]
 
   @@index([courseId])
   @@map("chapters")
+}
+
+// Nhóm bài (cấp trung gian Chương → Nhóm bài → Bài). Tùy chọn:
+// lesson.sectionId = null nghĩa là bài nằm trực tiếp dưới chương.
+model Section {
+  id        String   @id @default(uuid())
+  chapterId String
+  chapter   Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  title     String
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lessons Lesson[]
+
+  @@index([chapterId])
+  @@map("sections")
 }
 
 model Lesson {
   id          String     @id @default(uuid())
   chapterId   String
   chapter     Chapter    @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  // nhóm bài (tùy chọn): null = nằm trực tiếp dưới chương
+  sectionId   String?
+  section     Section?   @relation(fields: [sectionId], references: [id], onDelete: SetNull)
   title       String
   description String?
   type        LessonType @default(VIDEO)
@@ -348,6 +369,7 @@ model Lesson {
   attachments  LessonAttachment[]
 
   @@index([chapterId])
+  @@index([sectionId])
   @@map("lessons")
 }
 
